@@ -32,7 +32,8 @@
   .num { font-size:1.2rem; font-weight:700; letter-spacing:.02em; }
   .row { display:flex; gap:8px; align-items:center; justify-content:space-between; flex-wrap:wrap; }
   details summary { cursor:pointer; color:var(--muted); font-size:.9rem; }
-  input[type=url] { width:100%; margin-top:8px; padding:10px; border-radius:10px; border:1px solid var(--line); background:var(--bg); color:var(--text); font:inherit; }
+  input[type=url], input[type=password], select { width:100%; margin-top:8px; padding:10px; border-radius:10px; border:1px solid var(--line); background:var(--bg); color:var(--text); font:inherit; }
+  #tickets { padding-left:20px; font-size:.9rem; display:grid; gap:8px; }
   #log { font-size:.8rem; color:var(--muted); display:grid; gap:2px; }
 </style>
 </head>
@@ -54,6 +55,30 @@
     <button class="primary" id="wake">Despertar backend</button>
     <label class="toggle"><input type="checkbox" id="keep">
       <span>Mantener despierto mientras esta pestaña esté abierta<br><span class="sub">Un ping cada 4 min; así no se duerme durante la demo. Apagado por defecto.</span></span></label>
+  </section>
+
+  <section class="card" aria-labelledby="agentTitle">
+    <h2 id="agentTitle" style="font-size:1.1rem">Agente de la demostración</h2>
+    <label>Acceso al panel<input type="password" id="controlKey" autocomplete="off" placeholder="Clave privada del panel"></label>
+    <div class="sub">La clave se usa sólo en esta pestaña y no se guarda.</div>
+    <button class="ghost" id="loadAgent">Consultar agente activo</button>
+    <div id="activeAgent" role="status">Conecta el panel para consultar la configuración.</div>
+    <label>Para las siguientes llamadas<select id="profile" disabled>
+      <option value="restaurant">Restaurante · Lobos Pizza</option>
+      <option value="call-center">Call center · Red Demo</option>
+    </select></label>
+    <button class="primary" id="saveAgent" disabled>Aplicar agente</button>
+    <p class="sub">Las llamadas en curso conservan su agente. Ambas demos usan el mismo número.</p>
+    <details><summary>Guion del call center</summary><ol>
+      <li>«Desde ayer no tengo internet; ya reinicié el módem».</li>
+      <li>Cuenta ficticia <b>1002</b>, código postal <b>42186</b>.</li>
+      <li>«También, ¿cuánto cuesta el plan de 600 megas?».</li>
+      <li>«Sigue fallando. Quiero registrar un ticket». Escucha el resumen y confirma.</li>
+      <li>«Ahora quiero consultar mi factura». El agente conserva el contexto al cambiar de área.</li>
+      <li>«Eso es todo, gracias». Espera la despedida.</li>
+    </ol><p class="sub">Escenario alternativo: cuenta 1001 y CP 42080 muestran una incidencia de zona. Todos los datos son ficticios; no se realizan cobros, contrataciones ni cambios de servicio.</p></details>
+    <button class="ghost" id="loadTickets">Ver tickets de demostración</button>
+    <ul id="tickets" aria-live="polite"></ul>
   </section>
 
   <section class="card">
@@ -97,6 +122,60 @@
   const backend = () => (store.get("backend") || DEFAULT_BACKEND).replace(/\/$/, "");
   const fmt = (t) => new Date(t).toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" });
   let waking = false, keepTimer = null;
+  let selection = null;
+  const profileLabel = (p) => p === "call-center" ? "Call center · Red Demo" : "Restaurante · Lobos Pizza";
+  function resetSelection() {
+    selection = null; $("profile").disabled = true; $("saveAgent").disabled = true;
+    $("activeAgent").textContent = "Consulta el agente activo antes de cambiarlo.";
+    $("tickets").replaceChildren();
+  }
+  async function control(path, method = "GET", body) {
+    const base = new URL(backend());
+    if (base.protocol !== "https:") throw new Error("El backend debe usar HTTPS.");
+    const key = $("controlKey").value.trim();
+    if (!key) throw new Error("Introduce la clave privada del panel.");
+    const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 15000);
+    try {
+      const res = await fetch(base.origin + path, {
+        method, signal: ctl.signal, redirect: "error", cache: "no-store",
+        headers: { Authorization: "Bearer " + key, ...(body ? { "Content-Type": "application/json" } : {}) },
+        ...(body ? { body: JSON.stringify(body) } : {}),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        if (res.status === 409) resetSelection();
+        throw new Error(res.status === 401 ? "La clave del panel no es válida." : res.status === 503 ? "Falta configurar el acceso al panel en Render." : res.status === 409 ? "La selección cambió; vuelve a consultar el agente activo." : `Error del panel (${res.status}).`);
+      }
+      return data;
+    } finally { clearTimeout(timer); }
+  }
+  $("loadAgent").onclick = async () => {
+    resetSelection();
+    try {
+      selection = await control("/demo/config");
+      $("profile").value = selection.profile; $("profile").disabled = false; $("saveAgent").disabled = false;
+      $("activeAgent").textContent = "Activo: " + profileLabel(selection.profile);
+    } catch (e) { $("activeAgent").textContent = e.message; }
+  };
+  $("saveAgent").onclick = async () => {
+    if (!selection) return;
+    $("saveAgent").disabled = true;
+    try {
+      selection = await control("/demo/config", "PUT", { profile: $("profile").value, revision: selection.revision });
+      $("activeAgent").textContent = "Activo para nuevas llamadas: " + profileLabel(selection.profile);
+      logLine("Agente seleccionado: " + profileLabel(selection.profile));
+    } catch (e) { $("activeAgent").textContent = e.message; }
+    finally { $("saveAgent").disabled = !selection; }
+  };
+  $("loadTickets").onclick = async () => {
+    const list = $("tickets"); list.replaceChildren();
+    try {
+      const data = await control("/demo/tickets");
+      for (const ticket of data.tickets) { const li = document.createElement("li"); li.textContent = `${ticket.id}: ${ticket.summary}`; list.append(li); }
+      if (!data.tickets.length) { const li = document.createElement("li"); li.textContent = "Todavía no hay tickets registrados."; list.append(li); }
+    } catch (e) { const li = document.createElement("li"); li.textContent = e.message; list.append(li); }
+  };
+  $("controlKey").oninput = resetSelection;
 
   function logLine(text) {
     const el = document.createElement("div");
@@ -160,7 +239,7 @@
   $("keep").onchange = (e) => setKeep(e.target.checked);
   $("copy").onclick = async () => { try { await navigator.clipboard.writeText($("did").textContent.replace(/\s/g, "")); $("copy").textContent = "Copiado"; setTimeout(() => $("copy").textContent = "Copiar", 1500); } catch {} };
   $("backend").value = store.get("backend") || (DEFAULT_BACKEND.startsWith("http") ? DEFAULT_BACKEND : "");
-  $("backend").onchange = (e) => store.set("backend", e.target.value.trim());
+  $("backend").onchange = (e) => { store.set("backend", e.target.value.trim()); $("controlKey").value = ""; resetSelection(); };
   if (store.get("lastWake")) { $("lastWake").textContent = fmt(+store.get("lastWake")); $("took").textContent = `${store.get("took")} s`; }
   if (store.get("keep") === "1") { $("keep").checked = true; setKeep(true); }
 </script>
