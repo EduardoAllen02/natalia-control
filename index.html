@@ -66,9 +66,28 @@
     <label>Para las siguientes llamadas<select id="profile" disabled>
       <option value="restaurant">Restaurante · Lobos Pizza</option>
       <option value="call-center">Call center · Red Demo</option>
+      <option value="barbershop">Barbería · El Bigote</option>
+      <option value="clinic">Clínica · Horizonte</option>
+    </select></label>
+    <label>Voz<select id="voice" disabled>
+      <option value="natalia">Natalia (actual)</option>
     </select></label>
     <button class="primary" id="saveAgent" disabled>Aplicar agente</button>
-    <p class="sub">Las llamadas en curso conservan su agente. Ambas demos usan el mismo número.</p>
+    <p class="sub">Las llamadas en curso conservan su agente y su voz. Todas las demos usan el mismo número.</p>
+    <details><summary>Guion de la barbería</summary><ol>
+      <li>«Quiero sacar cita para un corte».</li>
+      <li>Cuando pregunte por barbero: «¿Quién es bueno para los fades?» (debe recomendar a Beto).</li>
+      <li>«¿Tiene lugar el jueves en la tarde?». Ofrece máximo dos horarios libres.</li>
+      <li>Da tu nombre. Escucha el resumen con precio y responde «Sí, perfecto».</li>
+      <li>«¿Cuánto cuesta la barba?» y «¿dónde están?». Luego «Es todo, gracias»: despedida grabada y cuelga.</li>
+    </ol><p class="sub">Prueba extra: pide un lunes (está cerrado) o el mismo horario desde otra llamada (ya ocupado).</p></details>
+    <details><summary>Guion de la clínica</summary><ol>
+      <li>«Quiero una cita con el doctor Ramírez» o «mi hijo tiene tos, ¿con quién lo llevo?» (pediatría).</li>
+      <li>Responde si es primera vez y qué día te acomoda.</li>
+      <li>Da el nombre del paciente. Escucha el resumen con consultorio y costo; confirma.</li>
+      <li>Pregunta «¿cuánto cuesta la consulta con cardiología?» o la dirección.</li>
+      <li>«Es todo». Debe despedirse con la grabación y colgar.</li>
+    </ol><p class="sub">Diez médicos ficticios en un JSON corto. No da diagnósticos; ante una urgencia indica llamar al 911.</p></details>
     <details><summary>Guion del call center</summary><ol>
       <li>«Desde ayer no tengo internet; ya reinicié el módem».</li>
       <li>Cuenta ficticia <b>1002</b>, código postal <b>42186</b>.</li>
@@ -123,9 +142,12 @@
   const fmt = (t) => new Date(t).toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" });
   let waking = false, keepTimer = null;
   let selection = null;
-  const profileLabel = (p) => p === "call-center" ? "Call center · Red Demo" : "Restaurante · Lobos Pizza";
+  const PROFILE_LABELS = { "restaurant": "Restaurante · Lobos Pizza", "call-center": "Call center · Red Demo", "barbershop": "Barbería · El Bigote", "clinic": "Clínica · Horizonte" };
+  const profileLabel = (p) => PROFILE_LABELS[p] || p;
+  let voiceLabels = {};
+  const describe = (sel) => profileLabel(sel.profile) + (sel.voice ? " · " + (voiceLabels[sel.voice] || sel.voice) : "");
   function resetSelection() {
-    selection = null; $("profile").disabled = true; $("saveAgent").disabled = true;
+    selection = null; $("profile").disabled = true; $("voice").disabled = true; $("saveAgent").disabled = true;
     $("activeAgent").textContent = "Consulta el agente activo antes de cambiarlo.";
     $("tickets").replaceChildren();
   }
@@ -153,17 +175,24 @@
     resetSelection();
     try {
       selection = await control("/demo/config");
+      if (Array.isArray(selection.voices)) {
+        voiceLabels = Object.fromEntries(selection.voices.map((v) => [v.key, v.label]));
+        $("voice").replaceChildren(...selection.voices.map((v) => { const o = document.createElement("option"); o.value = v.key; o.textContent = v.label; return o; }));
+      }
       $("profile").value = selection.profile; $("profile").disabled = false; $("saveAgent").disabled = false;
-      $("activeAgent").textContent = "Activo: " + profileLabel(selection.profile);
+      if (selection.voice) { $("voice").value = selection.voice; $("voice").disabled = false; }
+      $("activeAgent").textContent = "Activo: " + describe(selection);
     } catch (e) { $("activeAgent").textContent = e.message; }
   };
   $("saveAgent").onclick = async () => {
     if (!selection) return;
     $("saveAgent").disabled = true;
     try {
-      selection = await control("/demo/config", "PUT", { profile: $("profile").value, revision: selection.revision });
-      $("activeAgent").textContent = "Activo para nuevas llamadas: " + profileLabel(selection.profile);
-      logLine("Agente seleccionado: " + profileLabel(selection.profile));
+      const body = { profile: $("profile").value, revision: selection.revision };
+      if (!$("voice").disabled) body.voice = $("voice").value;
+      selection = await control("/demo/config", "PUT", body);
+      $("activeAgent").textContent = "Activo para nuevas llamadas: " + describe(selection);
+      logLine("Agente seleccionado: " + describe(selection));
     } catch (e) { $("activeAgent").textContent = e.message; }
     finally { $("saveAgent").disabled = !selection; }
   };
